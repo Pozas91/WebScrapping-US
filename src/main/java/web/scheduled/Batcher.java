@@ -2,11 +2,9 @@ package web.scheduled;
 
 import com.google.gson.Gson;
 import org.bson.Document;
-import web.database.MongoConnection;
-import web.main.TestJSoup;
+import web.database.MongoConnector;
 import web.scraping.jsoup.Chapter;
 import web.scraping.jsoup.Researcher;
-import web.scraping.jsoup.Utils;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -15,47 +13,56 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static web.database.MongoConnector.CHAPTERS_COLLECTION;
+import static web.database.MongoConnector.CHAPTERS_NEW_COLLECTION;
 
 public class Batcher {
 
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    // MARK: Batcher settings
 
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private final Integer INITIAL_DELAY = 0; // In seconds
     private final Integer PERIOD = 60 * 60 * 24; // In seconds => 1 day
-    private final Integer SECONDS_TO_CANCEL = 60 * 60; // In seconds
+
+
+    // MARK: Mongo
+
+    private final MongoConnector mongoConnector = new MongoConnector();
+
 
     public void prepare() {
 
         final Runnable scheduled = this::start;
 
-        final ScheduledFuture<?> scheduledHandle = scheduler.scheduleAtFixedRate(scheduled, INITIAL_DELAY, PERIOD, SECONDS);
-
-//        scheduler.schedule((Runnable) () -> scheduledHandle.cancel(true), SECONDS_TO_CANCEL, SECONDS);
+        scheduler.scheduleAtFixedRate(scheduled, INITIAL_DELAY, PERIOD, SECONDS);
     }
 
     private void start() {
 
         System.out.printf("%n Initializing batch... %n%n");
 
-        savingChaptersFromWebScrapping();
+//        generateAllChapters();
+
+        generateNewsChapters();
 
         System.out.printf("%n Batch finished. %n%n");
     }
 
-    private void savingChaptersFromWebScrapping() {
+    private void generateAllChapters() {
 
         List<String> profileLinks = null;
+        Set<Chapter> chapters = new HashSet<>();
+        List<Document> documents = new ArrayList<>();
 
         try {
             profileLinks = Researcher.getProfileLinks();
         } catch (IOException e) {
             e.printStackTrace();
         }
-
-        Set<Chapter> chapters = new HashSet<>();
 
         assert profileLinks != null;
 
@@ -73,24 +80,58 @@ public class Batcher {
 
         } else {
 
-            List<Document> data = new ArrayList<>();
-
             chapters.forEach(chapter -> {
                 Gson gson = new Gson();
                 String json = gson.toJson(chapter);
-                data.add(Document.parse(json));
+                documents.add(Document.parse(json));
             });
 
-            String collection = MongoConnection.CHAPTERS_AUX_COLLECTION;
+            mongoConnector.cleanCollection(CHAPTERS_COLLECTION);
 
-            MongoConnection mongoConnection = new MongoConnection();
-            mongoConnection.cleanCollection(collection);
+            mongoConnector.populateCollection(CHAPTERS_COLLECTION, documents);
+        }
+    }
 
-            List<List<Document>> batches = Utils.batchList(data, 150);
+    private void generateNewsChapters() {
 
-            for(List<Document> batch : batches) {
-                mongoConnection.populateCollection(collection, batch);
+        List<String> profileLinks = null;
+        List<Document> documents = new ArrayList<>();
+        Set<Chapter> chapters = new HashSet<>();
+        Set<Chapter> oldChapters = mongoConnector.getChapters();
+
+        try {
+            profileLinks = Researcher.getProfileLinks();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        assert profileLinks != null;
+
+        for(String profileLink : profileLinks) {
+            try {
+                chapters.addAll(Chapter.getChaptersByResearcher(profileLink));
+            } catch (IOException e) {
+                e.printStackTrace();
             }
+        }
+
+        if(chapters.isEmpty()) {
+
+            System.err.println("Don't have any data to record.");
+
+        } else {
+
+            Set<Chapter> newsChapters = chapters.stream().filter(x -> !oldChapters.contains(x)).collect(Collectors.toSet());
+
+            newsChapters.forEach(chapter -> {
+                Gson gson = new Gson();
+                String json = gson.toJson(chapter);
+                documents.add(Document.parse(json));
+            });
+
+            mongoConnector.cleanCollection(CHAPTERS_NEW_COLLECTION);
+
+            mongoConnector.populateCollection(CHAPTERS_NEW_COLLECTION, documents);
         }
     }
 }

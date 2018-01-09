@@ -130,13 +130,17 @@ public class Researcher implements Comparable {
 
         Researcher other = (Researcher) o;
 
-        int compare = this.key.compareToIgnoreCase(other.key);
+        int compare = 0;
 
-        if(compare == 0) {
+        if(this.key != null) {
+            compare = this.key.compareToIgnoreCase(other.key);
+        }
+
+        if(compare == 0 && this.name != null) {
             compare = this.name.compareToIgnoreCase(other.name);
         }
 
-        if(compare == 0) {
+        if(compare == 0 && this.view != null) {
             compare = this.view.compareTo(other.view);
         }
 
